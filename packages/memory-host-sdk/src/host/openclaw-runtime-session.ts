@@ -37,6 +37,7 @@ export {
   loadTranscriptEventsSync,
   listSessionEntries,
   parseSqliteSessionFileMarker,
+  readTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync,
   resolveTranscriptSessionKeyBySessionId,
   resolveStorePath,
