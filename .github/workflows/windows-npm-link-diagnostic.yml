@@ -7,64 +7,79 @@ on:
 permissions:
   contents: read
 
+env:
+  PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
+
 jobs:
   links:
     runs-on: windows-2025
-    timeout-minutes: 5
+    timeout-minutes: 25
     steps:
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-env
         with:
           node-version: 22.23.2
-      - name: Compare nested directory links with native module loading
+          install-bun: "false"
+          frozen-lockfile: "true"
+      - name: Obtain the immutable pre-fix producer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin 6096618cc8602fecd22989d90e1f4937f3bfe1c8
+          test "$(git rev-parse FETCH_HEAD)" = 6096618cc8602fecd22989d90e1f4937f3bfe1c8
+      - name: Verify real isolated builds fail before and pass after the repair
         shell: pwsh
         run: |
           $source = @'
+          import assert from 'node:assert/strict';
           import fs from 'node:fs';
-          import os from 'node:os';
           import path from 'node:path';
           import {spawnSync} from 'node:child_process';
-          const results=[];
-          for (const hostLink of ['relative','absolute']) {
-            const root=fs.mkdtempSync(path.join(os.tmpdir(),'openclaw-link-probe-'));
-            const source=path.join(root,'extensions','probe');
-            const output=path.join(root,'dist','extensions','probe');
-            const sourceModules=path.join(source,'node_modules');
-            const stagedModules=path.join(output,'node_modules');
-            const redact=value=>String(value).replaceAll(root,'<fixture>').replaceAll(root.replaceAll('\\','/'),'<fixture>');
-            const attempt=fn=>{try{return fn();}catch(error){return {code:error.code,message:redact(error.message)};}};
-            try {
-              fs.mkdirSync(sourceModules,{recursive:true});
-              fs.mkdirSync(output,{recursive:true});
-              fs.mkdirSync(path.join(root,'dist','plugin-sdk'),{recursive:true});
-              fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({name:'openclaw',type:'module',exports:{'./plugin-sdk/probe':'./dist/plugin-sdk/probe.js'}}));
-              fs.writeFileSync(path.join(root,'dist','plugin-sdk','probe.js'),'export const marker="HOST";\n');
-              for(const dir of [source,output]) fs.writeFileSync(path.join(dir,'package.json'),JSON.stringify({name:'@openclaw/probe',type:'module'}));
-              const link=path.join(sourceModules,'openclaw');
-              fs.symlinkSync(hostLink==='relative'?path.relative(sourceModules,root):root,link,hostLink==='relative'?'dir':'junction');
-              fs.symlinkSync(sourceModules,stagedModules,'junction');
-              const stagedHost=path.join(stagedModules,'openclaw');
-              const result={hostLink,node:process.version,platform:process.platform,arch:process.arch,
-                sourceTarget:attempt(()=>redact(fs.readlinkSync(link))),
-                outerTarget:attempt(()=>redact(fs.readlinkSync(stagedModules))),
-                javascriptRealpath:attempt(()=>path.relative(root,fs.realpathSync(stagedHost))||'.'),
-                nativeRealpath:attempt(()=>path.relative(root,fs.realpathSync.native(stagedHost))||'.'),
-                stagedExports:attempt(()=>JSON.parse(fs.readFileSync(path.join(stagedHost,'package.json'),'utf8')).exports)};
-              for(const [kind,extension,sourceText] of [
-                ['esm','mjs','import {marker} from "openclaw/plugin-sdk/probe"; console.log(marker);'],
-                ['cjs','cjs','console.log(require("openclaw/plugin-sdk/probe").marker);']]) {
-                const file=path.join(output,`entry.${extension}`);
-                fs.writeFileSync(file,sourceText);
-                const child=spawnSync(process.execPath,[file],{encoding:'utf8',timeout:15000});
-                result[kind]={exitCode:child.status,stdout:redact(child.stdout),stderr:redact(child.stderr),error:child.error?.code};
-              }
-              results.push(result);
-            } catch(error) {
-              results.push({hostLink,node:process.version,platform:process.platform,error:attempt(()=>{throw error;})});
-            } finally {
-              fs.rmSync(root,{recursive:true,force:true});
-            }
+          assert.equal(process.platform, 'win32');
+          assert.equal(process.version, 'v22.23.2');
+          assert.equal(process.arch, 'x64');
+          const producer='scripts/copy-bundled-plugin-metadata.mts';
+          const fixed=fs.readFileSync(producer);
+          const before=spawnSync('git',['show',`6096618cc8602fecd22989d90e1f4937f3bfe1c8:${producer}`]);
+          assert.equal(before.status,0,before.stderr?.toString());
+          assert.notDeepEqual(fixed,before.stdout);
+          const output='.artifacts/windows-sdk-proof';
+          fs.mkdirSync(output,{recursive:true});
+          function run(label) {
+            const result=spawnSync(process.execPath,['scripts/run-vitest.mjs','test/scripts/build-external-plugin-local-dist.test.ts','-t','retains (esm|cjs) source dependencies'],{encoding:'utf8',env:{...process.env,OPENCLAW_VITEST_MAX_WORKERS:'1'},maxBuffer:16*1024*1024});
+            const log=((result.stdout??'')+(result.stderr??'')).replace(/\x1b\[[0-9;]*m/g,'');
+            fs.writeFileSync(path.join(output,`${label}.log`),log);
+            process.stdout.write(log);
+            assert.ifError(result.error);
+            assert.equal(result.signal,null);
+            return {code:result.status,log};
           }
-          console.log(JSON.stringify(results,null,2));
+          let baseline;
+          try {
+            fs.writeFileSync(producer,before.stdout);
+            baseline=run('before');
+          } finally {
+            fs.writeFileSync(producer,fixed);
+          }
+          assert.notEqual(baseline.code,0,'Old producer unexpectedly passed');
+          assert.match(baseline.log,/Tests\s+2 failed/);
+          assert.match(baseline.log,/retains esm source dependencies/);
+          assert.match(baseline.log,/retains cjs source dependencies/);
+          assert.match(baseline.log,/ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|ENOENT/);
+          assert.doesNotMatch(baseline.log,/EPERM.*symlink|privilege is not held/i);
+          assert.equal(run('after').code,0,'Fixed producer failed');
+          console.log('windows-sdk: native Windows before-fail/after-pass verified');
           '@
           $source | node --input-type=module
           exit $LASTEXITCODE
+      - name: Build runtime and load every control-plane module natively
+        shell: pwsh
+        run: |
+          pnpm build qaRuntime
+          if ($LASTEXITCODE -ne 0) { throw "Windows runtime build failed" }
+          node scripts/check-built-plugin-control-plane-modules.mts
+          if ($LASTEXITCODE -ne 0) { throw "Windows native control-plane proof failed" }
+          & .\dist\extensions\codex\node_modules\.bin\codex.cmd --version
+          if ($LASTEXITCODE -ne 0) { throw "Staged private Windows launcher failed" }
