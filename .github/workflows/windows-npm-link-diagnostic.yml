@@ -12,8 +12,14 @@ env:
 
 jobs:
   links:
+    name: ${{ matrix.revision }} / ${{ matrix.probe }}
     runs-on: windows-2025
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: [baseline, candidate]
+        probe: [primitive, real-builder]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -23,58 +29,60 @@ jobs:
           node-version: 22.23.2
           install-bun: "false"
           frozen-lockfile: "true"
-      - name: Obtain the immutable pre-fix producer
+      - name: Verify exact native platform
+        shell: pwsh
+        run: |
+          node --input-type=module -e 'import assert from "node:assert/strict"; assert.equal(process.platform,"win32"); assert.equal(process.version,"v22.23.2"); assert.equal(process.arch,"x64");'
+          if ($LASTEXITCODE -ne 0) { throw "Unexpected platform" }
+      - name: Select immutable baseline before any proof process starts
+        if: matrix.revision == 'baseline'
         shell: bash
         run: |
           set -euo pipefail
           git fetch --no-tags --depth=1 origin 6096618cc8602fecd22989d90e1f4937f3bfe1c8
           test "$(git rev-parse FETCH_HEAD)" = 6096618cc8602fecd22989d90e1f4937f3bfe1c8
-      - name: Verify real isolated builds fail before and pass after the repair
+          git show 6096618cc8602fecd22989d90e1f4937f3bfe1c8:scripts/copy-bundled-plugin-metadata.mts > scripts/copy-bundled-plugin-metadata.mts
+      - name: Probe actual metadata owner with native filesystem primitives
+        if: matrix.probe == 'primitive'
         shell: pwsh
+        env:
+          PROBE_REVISION: ${{ matrix.revision }}
+        run: |
+          node scripts/windows-native-staging-probe.mjs $env:PROBE_REVISION
+          if ($LASTEXITCODE -ne 0) { throw "Native metadata/filesystem probe failed: $LASTEXITCODE" }
+      - name: Probe real isolated builder with phase markers
+        if: matrix.probe == 'real-builder'
+        shell: pwsh
+        env:
+          PROBE_REVISION: ${{ matrix.revision }}
         run: |
           $source = @'
           import assert from 'node:assert/strict';
-          import fs from 'node:fs';
-          import path from 'node:path';
           import {spawnSync} from 'node:child_process';
-          assert.equal(process.platform, 'win32');
-          assert.equal(process.version, 'v22.23.2');
-          assert.equal(process.arch, 'x64');
-          const producer='scripts/copy-bundled-plugin-metadata.mts';
-          const fixed=fs.readFileSync(producer);
-          const before=spawnSync('git',['show',`6096618cc8602fecd22989d90e1f4937f3bfe1c8:${producer}`]);
-          assert.equal(before.status,0,before.stderr?.toString());
-          assert.notDeepEqual(fixed,before.stdout);
-          const output='.artifacts/windows-sdk-proof';
-          fs.mkdirSync(output,{recursive:true});
-          function run(label) {
-            const result=spawnSync(process.execPath,['scripts/run-vitest.mjs','test/scripts/build-external-plugin-local-dist.test.ts','-t','retains (esm|cjs) source dependencies'],{encoding:'utf8',env:{...process.env,OPENCLAW_VITEST_MAX_WORKERS:'1'},maxBuffer:16*1024*1024});
-            const log=((result.stdout??'')+(result.stderr??'')).replace(/\x1b\[[0-9;]*m/g,'');
-            fs.writeFileSync(path.join(output,`${label}.log`),log);
-            process.stdout.write(log);
-            assert.ifError(result.error);
-            assert.equal(result.signal,null);
-            return {code:result.status,log};
+          const result=spawnSync(process.execPath,['scripts/run-vitest.mjs','test/scripts/build-external-plugin-local-dist.test.ts','-t','retains (esm|cjs) source dependencies'],{encoding:'utf8',env:{...process.env,OPENCLAW_VITEST_MAX_WORKERS:'1'},maxBuffer:16*1024*1024});
+          const log=((result.stdout??'')+(result.stderr??'')).replace(/\x1b\[[0-9;]*m/g,'');
+          process.stdout.write(log);
+          assert.ifError(result.error);
+          assert.equal(result.signal,null);
+          if (process.env.PROBE_REVISION === 'baseline') {
+            assert.equal(result.status,1,'Baseline must fail normally, not crash');
+            assert.match(log,/Tests\s+2 failed/);
+            assert.match(log,/retains esm source dependencies/);
+            assert.match(log,/retains cjs source dependencies/);
+            assert.match(log,/ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|ENOENT/);
+            assert.doesNotMatch(log,/EPERM.*symlink|privilege is not held/i);
+          } else {
+            assert.equal(result.status,0,'Candidate real builder failed');
+            assert.match(log,/Tests\s+2 passed/);
           }
-          let baseline;
-          try {
-            fs.writeFileSync(producer,before.stdout);
-            baseline=run('before');
-          } finally {
-            fs.writeFileSync(producer,fixed);
-          }
-          assert.notEqual(baseline.code,0,'Old producer unexpectedly passed');
-          assert.match(baseline.log,/Tests\s+2 failed/);
-          assert.match(baseline.log,/retains esm source dependencies/);
-          assert.match(baseline.log,/retains cjs source dependencies/);
-          assert.match(baseline.log,/ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|ENOENT/);
-          assert.doesNotMatch(baseline.log,/EPERM.*symlink|privilege is not held/i);
-          assert.equal(run('after').code,0,'Fixed producer failed');
-          console.log('windows-sdk: native Windows before-fail/after-pass verified');
+          // This job never changes the producer after starting Vitest. Windows
+          // runner teardown owns any descendants the wrapper cannot certify.
+          console.log(`windows-native: ${process.env.PROBE_REVISION} real-builder result verified`);
           '@
           $source | node --input-type=module
           exit $LASTEXITCODE
       - name: Build runtime and load every control-plane module natively
+        if: matrix.revision == 'candidate' && matrix.probe == 'real-builder'
         shell: pwsh
         run: |
           pnpm build qaRuntime

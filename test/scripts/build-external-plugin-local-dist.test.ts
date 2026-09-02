@@ -17,7 +17,15 @@ import { BUILD_STAMP_FILE } from "../../scripts/lib/local-build-metadata-paths.m
 import { resolveBuildRequirement } from "../../scripts/run-node.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+// Diagnostic branch only: synchronous markers survive native process termination.
+const nativePhase = (phase: string) => fs.writeSync(2, `[windows-native] ${phase}\n`);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(() => {
+    nativePhase("fixture cleanup begin");
+    cleanup();
+    nativePhase("fixture cleanup end");
+  }),
+);
 
 describe("external plugin local dist build", () => {
   it("keeps excluded plugin graphs isolated and their runtime metadata loadable", async () => {
@@ -136,6 +144,7 @@ describe("external plugin local dist build", () => {
   it.each(["esm", "cjs"])(
     "retains %s source dependencies across metadata profiles and the shared host SDK",
     async (runtimeFormat) => {
+      nativePhase(`${runtimeFormat} fixture begin`);
       const repoRoot = fs.realpathSync(tempDirs.make("openclaw-external-plugin-owners-"));
       const dependency = "@fixture/private-dep";
       const plugins = [
@@ -213,7 +222,9 @@ describe("external plugin local dist build", () => {
           JSON.stringify({ id: pluginId, skills: [`./node_modules/${dependency}`] }),
         );
       }
+      nativePhase(`${runtimeFormat} real build begin`);
       await buildExternalPluginLocalDist({ repoRoot, env: {}, logLevel: "silent" });
+      nativePhase(`${runtimeFormat} real build end`);
       // Start with the previous build's directory link, then exercise both profile transitions.
       for (const [pluginId] of plugins) {
         fs.symlinkSync(
@@ -234,7 +245,9 @@ describe("external plugin local dist build", () => {
         ["isolated again", {}, true],
         ["isolated repeated", {}, true],
       ] as const) {
+        nativePhase(`${runtimeFormat} metadata ${profile} begin`);
         copyBundledPluginMetadata({ repoRoot, env });
+        nativePhase(`${runtimeFormat} metadata ${profile} end`);
         for (const [pluginId, version] of plugins) {
           const sourceModules = path.join(repoRoot, "extensions", pluginId, "node_modules");
           const outputRoot = path.join(repoRoot, "dist", "extensions", pluginId);
@@ -263,12 +276,17 @@ describe("external plugin local dist build", () => {
         pathToFileURL(path.join(repoRoot, "dist", "extensions", pluginId, `index${extension}`))
           .href;
       const stagedDir = path.join(repoRoot, "staged", "first");
+      nativePhase(`${runtimeFormat} staged copy begin`);
       fs.cpSync(path.join(repoRoot, "dist", "extensions", "first"), stagedDir, { recursive: true });
+      nativePhase(`${runtimeFormat} staged copy end`);
+      nativePhase(`${runtimeFormat} bin exec begin`);
       expect(
         execFileSync(process.execPath, [path.join(stagedDir, "node_modules/.bin/probe.cjs")], {
           encoding: "utf8",
         }).trim(),
       ).toBe("1.0.0");
+      nativePhase(`${runtimeFormat} bin exec end`);
+      nativePhase(`${runtimeFormat} SDK imports begin`);
       const output = execFileSync(
         process.execPath,
         [
@@ -288,6 +306,7 @@ describe("external plugin local dist build", () => {
         { encoding: "utf8" },
       );
       expect(JSON.parse(output)).toEqual({ versions: ["1.0.0", "2.0.0", "1.0.0"], shared: true });
+      nativePhase(`${runtimeFormat} SDK imports end`);
     },
   );
 
