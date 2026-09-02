@@ -277,15 +277,13 @@ describe("external plugin local dist build", () => {
           .href;
       const stagedDir = path.join(repoRoot, "staged", "first");
       nativePhase(`${runtimeFormat} staged copy begin`);
-      fs.cpSync(path.join(repoRoot, "dist", "extensions", "first"), stagedDir, { recursive: true });
+      // Match installPackageDir's link-preserving copy contract. Node's native
+      // cpSync walker can traverse Windows junctions instead of preserving them.
+      await fs.promises.cp(path.join(repoRoot, "dist", "extensions", "first"), stagedDir, {
+        recursive: true,
+        verbatimSymlinks: true,
+      });
       nativePhase(`${runtimeFormat} staged copy end`);
-      nativePhase(`${runtimeFormat} bin exec begin`);
-      expect(
-        execFileSync(process.execPath, [path.join(stagedDir, "node_modules/.bin/probe.cjs")], {
-          encoding: "utf8",
-        }).trim(),
-      ).toBe("1.0.0");
-      nativePhase(`${runtimeFormat} bin exec end`);
       nativePhase(`${runtimeFormat} SDK imports begin`);
       const output = execFileSync(
         process.execPath,
@@ -307,6 +305,13 @@ describe("external plugin local dist build", () => {
       );
       expect(JSON.parse(output)).toEqual({ versions: ["1.0.0", "2.0.0", "1.0.0"], shared: true });
       nativePhase(`${runtimeFormat} SDK imports end`);
+      nativePhase(`${runtimeFormat} bin exec begin`);
+      expect(
+        execFileSync(process.execPath, [path.join(stagedDir, "node_modules/.bin/probe.cjs")], {
+          encoding: "utf8",
+        }).trim(),
+      ).toBe("1.0.0");
+      nativePhase(`${runtimeFormat} bin exec end`);
     },
   );
 

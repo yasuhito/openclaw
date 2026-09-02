@@ -24,6 +24,14 @@ const run = (file) => {
 };
 try {
   phase(`start ${process.platform} ${process.version} ${process.arch}`);
+  // A bounded, non-cyclic control exposes native cpSync junction materialization.
+  write(path.join(root, "leaf/value.txt"), "leaf");
+  fs.mkdirSync(path.join(root, "copy-source"));
+  fs.symlinkSync(path.join(root, "leaf"), path.join(root, "copy-source/link"), "junction");
+  fs.cpSync(path.join(root, "copy-source"), path.join(root, "copy-target"), { recursive: true });
+  phase(
+    `native cpSync preserves junction: ${fs.lstatSync(path.join(root, "copy-target/link")).isSymbolicLink()}`,
+  );
   write(path.join(root, "package.json"), {
     name: "openclaw",
     type: "module",
@@ -108,7 +116,10 @@ try {
   }
   phase("staged copy begin");
   const staged = path.join(root, "staged/first");
-  fs.cpSync(path.join(root, "dist/extensions/first"), staged, { recursive: true });
+  await fs.promises.cp(path.join(root, "dist/extensions/first"), staged, {
+    recursive: true,
+    verbatimSymlinks: true,
+  });
   phase("staged copy end");
   for (const format of ["mjs", "cjs"]) {
     phase(`${format} host imports begin`);
@@ -124,8 +135,9 @@ try {
     );
     const result = run(script);
     phase(`${format} host imports exit ${result.status}`);
-    if (mode === "candidate") assert.equal(result.status, 0, result.stderr);
-    else {
+    if (mode === "candidate") {
+      assert.equal(result.status, 0, result.stderr);
+    } else {
       assert.equal(result.status, 1, result.stderr);
       assert.match(result.stderr, /ERR_MODULE_NOT_FOUND|ENOENT/);
       assert.match(result.stderr, /plugin-sdk/);
@@ -135,10 +147,8 @@ try {
   phase("bin exec begin");
   const bin = run(path.join(staged, "node_modules/.bin/probe.cjs"));
   phase(`bin exec exit ${bin.status}`);
-  if (mode === "candidate") {
-    assert.equal(bin.status, 0, bin.stderr);
-    assert.equal(bin.stdout.trim(), "1.0.0");
-  } else assert.equal(bin.status, 1, bin.stderr);
+  assert.equal(bin.status, 0, bin.stderr);
+  assert.equal(bin.stdout.trim(), "1.0.0");
 } finally {
   phase("cleanup begin");
   fs.rmSync(root, { recursive: true, force: true });

@@ -69,7 +69,9 @@ jobs:
             assert.match(log,/Tests\s+2 failed/);
             assert.match(log,/retains esm source dependencies/);
             assert.match(log,/retains cjs source dependencies/);
-            assert.match(log,/ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|ENOENT/);
+            assert.match(log,/ERR_MODULE_NOT_FOUND|ENOENT/);
+            assert.match(log,/plugin-sdk/);
+            assert.doesNotMatch(log,/Cannot find module '\.\.\/@fixture\/private-dep'/);
             assert.doesNotMatch(log,/EPERM.*symlink|privilege is not held/i);
           } else {
             assert.equal(result.status,0,'Candidate real builder failed');
