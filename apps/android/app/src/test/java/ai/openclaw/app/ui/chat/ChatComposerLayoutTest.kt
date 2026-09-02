@@ -267,7 +267,17 @@ class ChatComposerLayoutTest {
         """{"reason":"patch","session":{"key":"${AndroidScreenshotFixture.mainSessionKey}","thinkingLevel":"max","thinkingLevels":[{"id":"max","label":"max"}]}}""",
       )
     }
-    thinking.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "${nativeString("Max")}, ${nativeString("Fast mode")}: ${nativeString("Off")}"))
+    thinking.assert(
+      SemanticsMatcher.expectValue(
+        SemanticsProperties.StateDescription,
+        nativeString(
+          "\$selectedLabel, \$fastModeLabel: \$fastModeState",
+          nativeString("Max"),
+          nativeString("Fast mode"),
+          nativeString("Off"),
+        ),
+      ),
+    )
     thinking.performClick()
     composeRule.onNode(hasText(nativeString("Max")) and hasClickAction()).assertIsDisplayed().assertIsSelected()
   }
@@ -651,7 +661,17 @@ class ChatComposerLayoutTest {
             .onNodeWithContentDescription(nativeString("Thinking"))
             .assertIsDisplayed()
             .assertHasClickAction()
-            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "$thinkingLabel, ${nativeString("Fast mode")}: ${nativeString("Off")}")),
+            .assert(
+              SemanticsMatcher.expectValue(
+                SemanticsProperties.StateDescription,
+                nativeString(
+                  "\$selectedLabel, \$fastModeLabel: \$fastModeState",
+                  thinkingLabel,
+                  nativeString("Fast mode"),
+                  nativeString("Off"),
+                ),
+              ),
+            ),
         )
     val controlBounds = controls.map { it.getUnclippedBoundsInRoot() }.toMutableList()
     val primary = controlBounds.first()
